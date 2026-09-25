@@ -1,0 +1,18 @@
+{
+  "live": false,
+  "account_name": "",
+  "solana_wallet": "",
+  "hyperliquid_address": "",
+  "controller_id": "regime_switch_lp_competition",
+  "race_start": 0,
+  "race_end": 0,
+  "deployment_verified": false,
+  "protected_reserve_usd": 720,
+  "max_lp_usd": 40,
+  "hedge_collateral_usd": 30,
+  "max_openings": 2,
+  "exit_buffer_seconds": 1800,
+  "max_pending_seconds": 120,
+  "min_gas_sol": 0.02,
+  "entry_rent_and_gas_sol": 0.08
+}

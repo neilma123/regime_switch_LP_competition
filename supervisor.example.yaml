@@ -1,0 +1,22 @@
+# Merge into Botcamp's deployment only after the acceptance rehearsal.
+# Pin a Condor image with the release installed. Inject credentials securely.
+services:
+  regime-supervisor:
+    image: YOUR_PINNED_CONDOR_IMAGE_WITH_RELEASE
+    working_dir: /app
+    command: [python, -m, regime_switch_runtime, --config, /run/regime/config.json, --state, /state/race.json, --loop]
+    restart: unless-stopped
+    read_only: true
+    environment:
+      PYTHONDONTWRITEBYTECODE: '1'
+      REGIME_API_URL: ${REGIME_API_URL}
+      REGIME_API_USERNAME: ${REGIME_API_USERNAME}
+      REGIME_API_PASSWORD: ${REGIME_API_PASSWORD}
+      REGIME_SOLANA_RPC_URL: ${REGIME_SOLANA_RPC_URL}
+    volumes:
+      - ./config.json:/run/regime/config.json:ro
+      - regime-state:/state
+    tmpfs:
+      - /tmp
+volumes:
+  regime-state:

@@ -1,0 +1,29 @@
+{
+  "condor_tested_commit": "d89e74f2",
+  "files": {
+    "LICENSE": "a809254b8a99d3b1ea974cc6bce5eaf216a6bc575778a6ef35428a09e1ec0ebf",
+    "README.md": "74771635ed2e3725337aa9237984ba0b1521095eb2663761735d04dbe8b11465",
+    "VALIDATION.md": "327b714657aa153bc1257bc7bc06a9141e34d4518d72402201117852f1422ab5",
+    "agents/regime_switch_lp/AGENT.md": "9a4243104701b5ca3d379841ee41914e02aaea46641fd4d49defa33f4e05a975",
+    "agents/regime_switch_lp/routines/operator_tick.py": "811790d1528a676405571d5d46245190dbf952418c21833eb75fb9270a9db277",
+    "agents/regime_switch_lp/skills/lp_operator_playbook/SKILL.md": "26afa3a19769c6b6b18d07b4ab0cab6153f1aa12180a28836796364499fc7a23",
+    "agents/regime_switch_lp/strategies/trend_filtered_lp/strategy.md": "2a50331ca150c0de4ce2c258b9a58a6a144b75a610d661b89bb36a559489d294",
+    "config.example.json": "ee0400d7501d9c556a6ec541f3b3c0fcdaf4ca8b5e62890ee172af6d7225a324",
+    "install.py": "9766e59b31d91cac3eea6a5ae7660da3c3e0991db665e7ba93787b729c460e56",
+    "regime_switch_runtime/__init__.py": "881df74384a37a706247aa574b09cbdded5dc7b67f7c7cf73f8c88525d76a31c",
+    "regime_switch_runtime/__main__.py": "0b30efdd15661ea0a6dff62de088a68265235985c930b221ca2371c6fcb5438b",
+    "regime_switch_runtime/broker.py": "08b06e376ffebb979af5315577eb4dd637b5f83f1c3c5ebccdbb6dff98150324",
+    "regime_switch_runtime/capital_guard.py": "45c4c189fdb93f33afb3114b2c74ae28a5a65daf0d7d0e639006e52463b58155",
+    "regime_switch_runtime/engine.py": "db242dd0b6cb9a7761fb29411b27016dab4140bf800cfe1f393bdbcaf6a11456",
+    "regime_switch_runtime/operator.py": "17ffb639419c8cd5d05d8ca3f0de3721d7f81e76063245e753cf8938603ec069",
+    "regime_switch_runtime/profile.py": "155cfd56b7c5b57f5bb6278d1b789e0a44d9d813198f89834b355de81d6cf68d",
+    "regime_switch_runtime/regime.py": "71ebf5960e681280c52c6eba415d823ffd26aca5ad15e22111d6194f55da9dca",
+    "regime_switch_runtime/settings.py": "5047e862cfa68dfc14750325e59fe9d7cfef0abe42f5955870590518b8b350c2",
+    "regime_switch_runtime/state.py": "d2d9ac7e65d86f2e6723764decb257819186a862750d0b5ec08a3cb18244b8e7",
+    "requirements.lock.txt": "e310c774e2ee158bf56a76ee615aa94a5770d7a69f8e1c17a3d6b00c6598a148",
+    "requirements.txt": "bbe58d38b5455cbaec1f0c1465692a720d97ac067028078f68142d7033985d41",
+    "strategy.md": "9061695c3f634b15cb81dc8d45a85f63a1e7e8b48bf4781e1ccc900cd9f41308",
+    "supervisor.example.yaml": "46aa19de8bf312156081f0947984f24c261d238ff952ac6319f2ae239a058017",
+    "verify_install.py": "724e2f24b61e3a6675510ce06efe9ab58deb1facf71e2a6bd2508282f5341f9e"
+  }
+}
