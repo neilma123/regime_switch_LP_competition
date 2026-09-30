@@ -57,6 +57,34 @@ Every SOL regime window still loses under these fee assumptions. Regime switchin
 
 The runtime now detects retired executors with surviving owned LPs and attempts bounded direct withdrawal, preserving unknown status until on-chain confirmation. Malformed quotes and missing unclaimed-fee values fail closed. Final verification includes these regression tests. Public source Git checks on September 25 still resolve upstream Condor main to `d89e74f2e3e273bea102c64e4977118e6a88084f`.
 
+## September 26 extension: on-the-fly tuning agent, evaluated with controls
+
+The submission now contains an optional advisory loop in which the Condor LLM agent reads a causal diagnosis of the last day and proposes parameters inside a frozen envelope (hedge ratio {0.5, 0.8, 1.0}; capital fraction {0, 0.4, 0.7, 1.0} of the $40 LP cap; half-width {0.7%, 1%, 1.3%}); at most one change per twelve hours, eighteen-hour expiry (four hours and six hours in the runs below), safety pauses and the halt not overridable, dollar caps/stops/opening limit unchanged (`regime_switch_runtime/tuning.py`, routines `diagnose` and `propose_tuning`, configuration flag `tuning_enabled`, default false). Whether the loop helps was tested offline in `lib_cjp/llm_tuning_eval.py` on the same 42 SOL 48-hour windows of `native_90d_20260925`, using the GitHub Copilot CLI through Condor's ACP bridge as the model, with the packet restricted to bars strictly before each decision and one decision every four bars. Controls: always-on, the fixed rule, and a "hold agent" that runs the identical plumbing but always re-proposes the rule's own values.
+
+| Competition profile ($40 cap, 1% width, two openings) | Windows | Mean P&L | Worst | Positive windows | Paired vs rule (block-bootstrap 95% CI) |
+|---|---:|---:|---:|---:|---|
+| Always-on | 42 | -$1.37 | -$2.42 | 0 | -$0.24 [-0.44, -0.06] |
+| Fixed rule | 42 | -$1.13 | -$1.62 | 0 | — |
+| Hold agent (plumbing control) | 42 | -$1.15 | -$1.91 | 0 | -$0.02 [-0.08, +0.06] |
+| LLM agent, run 1 (packet bug, see below) | 42 | -$0.58 | -$1.52 | 0 | +$0.56 [+0.43, +0.72], 83% of windows |
+| LLM agent, run 2 (reconciled packet) | 42 | -$0.71 | -$1.91 | 0 | +$0.42 [+0.29, +0.61], 79% of windows |
+
+The hold agent matching the rule shows the envelope plumbing itself is neutral. The LLM agent loses less than every control, but it never produced a positive window: it spent 35 of 48 bars paused (run 2), opened 1.2 times per race instead of 2, and its rationales cite the $0.15 + 30 bps open/close cost against negligible fee income. Cash ($0) beat it in 79% of windows. Its improvement is loss avoidance by sitting out, not a discovered edge, and the fee-capture assumption that makes every variant lose is unchanged.
+
+Run 1 was retained because the model itself exposed a bug: its diagnoses in the wide profile repeatedly said the attribution components did not sum to the equity change. They did not; the packet omitted the entry-inventory market term and double-counted hedge costs. The packet now mirrors `loss_attribution.attribute` and a test asserts reconciliation at every lookback. Run 2 uses the corrected packet. In run 2 the Copilot monthly quota was exhausted during the second profile: 183 of 504 wide-profile calls returned no answer (the rule stood, as designed), so the wide-profile figures below are contaminated and the competition-profile figures (zero failures) are the ones to read.
+
+| Wide research profile (12% width, unlimited openings, optimistic fees) | Mean P&L | Std | Worst | Positive windows |
+|---|---:|---:|---:|---:|
+| Always-on | +$0.83 | $8.57 | -$13.76 | 57% |
+| Fixed rule | -$1.86 | $1.67 | -$5.41 | 17% |
+| Hold agent | -$1.72 | $1.52 | -$6.15 | 12% |
+| LLM agent, run 1 | -$0.77 | $1.19 | -$4.75 | 24% |
+| LLM agent, run 2 (36% of calls unanswered) | -$1.31 | $1.45 | -$5.41 | 19% |
+
+Always-on "makes money" in the wide profile only through +$4.33 of unhedged entry-inventory market P&L in a favourable 90 days, with a -$19.8 worst drawdown; every hedged variant, including the agent, gives that back in hedge losses and costs. This is directional SOL exposure, not liquidity-provision edge, and not a reason to remove the hedge.
+
+Consequences: `tuning_enabled` stays false by default; the agent is a bounded advisor, never a controller; a re-hedge below the venue $10 minimum is not traded, so hedge-ratio proposals on a $28 position mostly do nothing; provider quota exhaustion silently degrades the agent to the rule, which is the intended failure mode but means the LLM cannot be relied upon for the race. Roughly 2,000 Copilot premium requests were consumed by this evaluation. Artifacts: `reports/llm_tuning/run_20260926` and `run_20260926b` (races, paired intervals, agent logs, decision cache, manifest with data hashes).
+
 ## Add-on decisions
 
 - **Volume-weighted reference:** a two-venue volume-weighted close, not true transaction VWAP. Final later-half paired effect versus regime: SOL -$0.002/race, JUP -$0.056, USELESS +$0.001. Too small/inconsistent and not executable price improvement evidence. Excluded.

@@ -163,8 +163,10 @@ class Broker:
             float(hl['marginSummary']['accountValue']),hedge_units,positions,own,rent,
             feature_stamp,features,age,foreign,leverage)
 
-    async def quote_lp(self,cfg,obs,budget):
-        lower,upper=obs.price*.99,obs.price*1.01
+    async def quote_lp(self,cfg,obs,budget,width=.01):
+        # One position account holds at most 69 bins of 4 bps: +/-1.3% is the widest fit.
+        if not (math.isfinite(width) and 0<width<=.0136): raise ValueError('LP width outside the single-position bin capacity')
+        lower,upper=obs.price*(1-width),obs.price*(1+width)
         # Two-percent value buffer for price changes, not permission to exceed
         # the reserved $40/$28 capital on the next tick.
         available=budget*.98
@@ -177,7 +179,7 @@ class Broker:
         quote=float(raw.get('quote_token_amount',raw.get('quoteTokenAmount')))
         if not all(math.isfinite(v) and v>0 for v in (base,quote)):
             raise ValueError('Position quote is invalid or empty/one-sided')
-        return dict(base_amount=base,quote_amount=quote,lower_price=lower,upper_price=upper,budget=budget)
+        return dict(base_amount=base,quote_amount=quote,lower_price=lower,upper_price=upper,budget=budget,width=width)
 
     def spot_payload(self,amount):
         return {'type':'order_executor','connector_name':'solana-mainnet-beta',
@@ -186,13 +188,17 @@ class Broker:
             'slippage_pct':'.1','max_slippage_pct':'.1','slippage_multiplier':'1','leverage':1}
 
     def lp_payload(self,quote):
+        w=float(quote.get('width') or .01)
         return {'type':'lp_executor','connector_name':'solana-mainnet-beta','lp_provider':'meteora/clmm',
             'swap_provider':'jupiter/router','pool_address':POOL,'trading_pair':f'{SOL}-{USDC}',
             'base_amount':str(quote['base_amount']),'quote_amount':str(quote['quote_amount']),
             'lower_price':str(quote['lower_price']),'upper_price':str(quote['upper_price']),
-            'lower_limit_price':str(quote['lower_price']*.985),'upper_limit_price':str(quote['upper_price']*1.015),
+            # Executor-side stop 1.5 widths beyond each bound (+/-1.5% for the 1% profile).
+            'lower_limit_price':str(quote['lower_price']*(1-1.5*w)),'upper_limit_price':str(quote['upper_price']*(1+1.5*w)),
             'side':3,'keep_position':False,'position_refresh_interval':1,
-            'slippage_pct':'.1','max_slippage_pct':'.1','slippage_multiplier':'1',
+            # Bounded widening on open retries (0.1% -> 0.2% -> 0.4% -> 0.5%)
+            # instead of repeating an identical tolerance until the executor fails.
+            'slippage_pct':'.1','max_slippage_pct':'.5','slippage_multiplier':'2',
             'extra_params':{'strategyType':0}}
 
     async def hedge_payload(self,cfg,obs,change):

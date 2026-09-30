@@ -17,7 +17,8 @@ def install(target):
         if not p.is_relative_to(source) or hashlib.sha256(p.read_bytes()).hexdigest()!=expected:
             raise ValueError('Release manifest verification failed')
     routine_dir=target/'agents/regime_switch_lp/routines'
-    unexpected=[p.name for p in routine_dir.glob('*.py') if p.name!='operator_tick.py']
+    shipped={Path(n).name for n in manifest if n.startswith('agents/regime_switch_lp/routines/')}
+    unexpected=[p.name for p in routine_dir.glob('*.py') if p.name not in shipped]
     if unexpected:
         raise ValueError('Legacy routines present; install in a clean checkout: '+', '.join(unexpected))
     backup=target/'submission_backups'/datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')
