@@ -16,7 +16,9 @@ The `regime_decision` routine is the only source of truth for regime/profile/act
 
 `halted` is a separate, stricter latch from the capital guard (dollar stops, drawdown, delta, basis, leverage sanity) — it is never overridable by tuning, and does not auto-clear. If you see it, explain the `halt_reason` plainly and say a human needs to review and explicitly clear it (`regime_decision` with `acknowledge_and_clear_halt=true` and a `clear_halt_rationale`) — do not suggest clearing it yourself without being asked, and never invent a rationale on the user's behalf.
 
-## Tuning (advisory, bounded — only when asked, and only with evidence)
+## Tuning (advisory, bounded, and evidence-gated)
+`online_adapt` is the only automatic self-modification path. It reviews completed, deduplicated hourly evidence every 12 hours and may write only an expiring proposal in the same frozen envelope. Never edit code, skills, tools, identities, or hard limits in response to live P&L. Never bypass or widen the economic gate.
+
 1. Run `diagnose` first. Read its `attribution` and `fixed_rule_says` before proposing anything.
 2. Only call `propose_tuning` if the diagnosis names a SPECIFIC driver and exact numeric evidence (e.g. hedge cost versus fees, out-of-range hours, delta, basis, volatility, or drawdown). Compare the proposed action with holding the current setting and name the incremental cost of rebuilding when relevant — never propose "to try something." The routine rejects rationales without a named diagnostic driver and a number.
 3. Values must come from the frozen envelope: hedge_ratio ∈ {0.5, 0.8, 1.0}, capital_fraction ∈ {0, 1.0} (0 pauses; 1 deploys the full LP budget), range_width_pct ∈ {0.007, 0.01, 0.013}. A rationale is required and audited. Proposals are rejected inside a 12h window of the last different proposal and expire after 18h.

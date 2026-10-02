@@ -20,6 +20,8 @@ default_config:
   delta_recenter_trigger_usd: 60
   economic_gate_enabled: true
   economic_cost_multiple: 1.5
+  online_self_modification: true
+  online_review_hours: 12
   max_openings_per_48h: 32
   max_new_entries_per_48h: 8
   max_repositions_per_48h: 24
@@ -43,6 +45,9 @@ Normal market-making behavior means following the market by removing and rebuild
 - LP: Meteora SOL-USDC pool `5rCf1DM8LjKTw4YqhnoLcngyZYeNnQqztScTogYHAS6`, network `solana-mainnet-beta`, trading_pair `SOL-USDC`.
 - Hedge: `hyperliquid_perpetual`, trading_pair `SOL-USD`, 1x leverage, ONEWAY mode.
 - `controller_id="regime_switch_lp"` on every executor you create — this is how positions get attributed to this loop.
+
+## Step 0 — Bounded online adaptation
+If `online_self_modification` is true, first call `manage_routines(action="run", agent="regime_switch_lp", name="online_adapt", config={"enabled": true, "review_hours": <config.online_review_hours, default 12>, "lookback_hours": 24, "loss_pause_usd": 0.50, "fee_cost_multiple": <config.economic_cost_multiple, default 1.5>})`. This may only write an expiring proposal inside the frozen hedge/capital/width envelope. It may not edit code, tools, pool identity, hard limits, the economic gate, safety pauses, or halt state. `NOT_DUE`, `INSUFFICIENT_HISTORY`, `SAFETY_PAUSE`, and `HARD_HALT` are normal no-change results. If this routine errors or returns malformed output, do not trade this tick.
 
 ## Step 1 — Analysis
 Call `manage_routines(action="run", agent="regime_switch_lp", name="regime_decision", config={"max_lp_usd": <this loop's config.max_lp_usd, default 520>, "hedge_collateral_usd": <config.hedge_collateral_usd, default 260>, "position_loss_usd": <config.position_loss_usd, default 50>, "daily_loss_usd": <config.daily_loss_usd, default 75>, "total_loss_usd": <config.total_loss_usd, default 200>, "drawdown_usd": <config.total_loss_usd, default 200>, "max_net_delta_usd": <config.max_net_delta_usd, default 75>, "delta_recenter_trigger_usd": <config.delta_recenter_trigger_usd, default 60>, "economic_gate_enabled": <config.economic_gate_enabled, default true>, "economic_cost_multiple": <config.economic_cost_multiple, default 1.5>, "max_openings_per_48h": <config.max_openings_per_48h, default 32>, "max_new_entries_per_48h": <config.max_new_entries_per_48h, default 8>, "max_repositions_per_48h": <config.max_repositions_per_48h, default 24>, "min_reposition_interval_seconds": <config.min_reposition_interval_seconds, default 1800>})`. Always pass the loop's configured caps and gates explicitly — never let the routine silently fall back to its own defaults if the launch config set different numbers. Parse its JSON text result as `decision`.

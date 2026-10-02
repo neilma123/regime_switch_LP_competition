@@ -1247,8 +1247,8 @@ async def run(config: Config, context: ContextTypes.DEFAULT_TYPE) -> str:
 
     history = list(state.get("hourly_history") or [])
     in_range = (lp_lower <= pool_price <= lp_upper) if lp_position else None
-    history.append(
-        {
+    history_row = {
+            "decision_bar_timestamp": decision_bar_ts,
             "timestamp": now.isoformat(),
             "equity": equity_usd,
             "lp_value": lp_value_usd,
@@ -1268,7 +1268,10 @@ async def run(config: Config, context: ContextTypes.DEFAULT_TYPE) -> str:
             "capital_fraction": op_decision.capital_fraction,
             "range_width_pct": op_decision.range_width_pct,
         }
-    )
+    if decision_bar_ts > previous_bar_timestamp:
+        history.append(history_row)
+    elif history and history[-1].get("decision_bar_timestamp") == decision_bar_ts:
+        history[-1] = history_row
     state["hourly_history"] = history[-72:]
     state.setdefault("tuning", None)
 
