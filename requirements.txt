@@ -1,4 +1,0 @@
-aiohttp>=3.9,<4
-numpy>=1.26,<2.3
-pandas>=2.2,<3
-pydantic>=2,<3
