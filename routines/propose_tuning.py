@@ -12,6 +12,7 @@ CATEGORY = "Analysis"
 
 import json
 import logging
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
 
@@ -32,7 +33,7 @@ class Config(BaseModel):
     """Propose a hedge_ratio/capital_fraction/range_width_pct override for regime_decision to apply next tick."""
 
     hedge_ratio: float = Field(
-        default=0.8, description="Proposed hedge ratio: one of 0.5, 0.8, 1.0"
+        default=1.0, description="Proposed hedge ratio: one of 0.5, 0.8, 1.0"
     )
     capital_fraction: float = Field(
         default=1.0,
@@ -42,7 +43,9 @@ class Config(BaseModel):
         default=0.01, description="Proposed LP range half-width pct: one of 0.007, 0.01, 0.013"
     )
     rationale: str = Field(
-        default="", description="Required rationale for this proposal (non-empty, max 600 chars)"
+        default="",
+        max_length=600,
+        description="Required grounded rationale naming a diagnostic driver and numeric evidence",
     )
 
 
@@ -60,8 +63,9 @@ def _load_state() -> Dict[str, Any]:
         with open(path, "r", encoding="utf-8") as fh:
             raw = json.load(fh)
     except (OSError, json.JSONDecodeError) as e:
-        logger.warning("propose_tuning: state file unreadable (%s), starting fresh", e)
-        return {"tuning": None, "audit": []}
+        raise RuntimeError(
+            f"Persistent strategy state is unreadable; refusing to propose tuning: {e}"
+        ) from e
     raw.setdefault("tuning", None)
     raw.setdefault("audit", [])
     return raw
@@ -103,6 +107,28 @@ async def run(config: Config, context: ContextTypes.DEFAULT_TYPE) -> str:
 
     if not rationale:
         result = {"status": "REFUSED", "detail": "a rationale is required"}
+    elif not re.search(r"[-+]?\d", rationale):
+        result = {"status": "REFUSED", "detail": "rationale must cite numeric diagnostic evidence"}
+    elif not any(
+        driver in rationale.lower()
+        for driver in (
+            "net equity",
+            "hedge",
+            "fee",
+            "out-of-range",
+            "economic gate",
+            "delta",
+            "basis",
+            "volatility",
+            "funding",
+            "whipsaw",
+            "drawdown",
+        )
+    ):
+        result = {
+            "status": "REFUSED",
+            "detail": "rationale must name a driver from diagnose/decision receipt",
+        }
     else:
         snapped: Dict[str, float] = {}
         result = None

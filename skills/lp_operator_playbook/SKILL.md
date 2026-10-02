@@ -18,7 +18,7 @@ The `regime_decision` routine is the only source of truth for regime/profile/act
 
 ## Tuning (advisory, bounded — only when asked, and only with evidence)
 1. Run `diagnose` first. Read its `attribution` and `fixed_rule_says` before proposing anything.
-2. Only call `propose_tuning` if the diagnosis names a SPECIFIC driver (e.g. hedge cost outweighing unclaimed fees, too many out-of-range hours, a classifier pause sitting out a quiet stretch) — never propose "to try something."
+2. Only call `propose_tuning` if the diagnosis names a SPECIFIC driver and exact numeric evidence (e.g. hedge cost versus fees, out-of-range hours, delta, basis, volatility, or drawdown). Compare the proposed action with holding the current setting and name the incremental cost of rebuilding when relevant — never propose "to try something." The routine rejects rationales without a named diagnostic driver and a number.
 3. Values must come from the frozen envelope: hedge_ratio ∈ {0.5, 0.8, 1.0}, capital_fraction ∈ {0, 1.0} (0 pauses; 1 deploys the full LP budget), range_width_pct ∈ {0.007, 0.01, 0.013}. A rationale is required and audited. Proposals are rejected inside a 12h window of the last different proposal and expire after 18h.
 4. Prefer the cheapest change: hedge_ratio only re-hedges; a width change closes and rebuilds the LP, consuming a reposition slot. Never create LP positions more frequently than the 30-minute minimum.
 5. A proposal never overrides `halted` or any volatility/data/recovery pause. `regime_decision` reports `tuning_status`; report that status, not your intent.
