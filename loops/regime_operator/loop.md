@@ -15,7 +15,7 @@ default_config:
   operating_reserve_usd: 20
   position_loss_usd: 50
   daily_loss_usd: 75
-  total_loss_usd: 100
+  total_loss_usd: 200
   max_net_delta_usd: 75
   max_openings_per_48h: 32
   max_new_entries_per_48h: 8
@@ -42,7 +42,7 @@ Normal market-making behavior means following the market by removing and rebuild
 - `controller_id="regime_switch_lp"` on every executor you create — this is how positions get attributed to this loop.
 
 ## Step 1 — Analysis
-Call `manage_routines(action="run", agent="regime_switch_lp", name="regime_decision", config={"max_lp_usd": <this loop's config.max_lp_usd, default 520>, "hedge_collateral_usd": <config.hedge_collateral_usd, default 260>, "position_loss_usd": <config.position_loss_usd, default 50>, "daily_loss_usd": <config.daily_loss_usd, default 75>, "total_loss_usd": <config.total_loss_usd, default 100>, "drawdown_usd": <config.total_loss_usd, default 100>, "max_net_delta_usd": <config.max_net_delta_usd, default 75>, "max_openings_per_48h": <config.max_openings_per_48h, default 32>, "max_new_entries_per_48h": <config.max_new_entries_per_48h, default 8>, "max_repositions_per_48h": <config.max_repositions_per_48h, default 24>, "min_reposition_interval_seconds": <config.min_reposition_interval_seconds, default 1800>})`. Always pass the loop's configured caps explicitly — never let the routine silently fall back to its own defaults if the launch config set different numbers. Parse its JSON text result as `decision`.
+Call `manage_routines(action="run", agent="regime_switch_lp", name="regime_decision", config={"max_lp_usd": <this loop's config.max_lp_usd, default 520>, "hedge_collateral_usd": <config.hedge_collateral_usd, default 260>, "position_loss_usd": <config.position_loss_usd, default 50>, "daily_loss_usd": <config.daily_loss_usd, default 75>, "total_loss_usd": <config.total_loss_usd, default 200>, "drawdown_usd": <config.total_loss_usd, default 200>, "max_net_delta_usd": <config.max_net_delta_usd, default 75>, "max_openings_per_48h": <config.max_openings_per_48h, default 32>, "max_new_entries_per_48h": <config.max_new_entries_per_48h, default 8>, "max_repositions_per_48h": <config.max_repositions_per_48h, default 24>, "min_reposition_interval_seconds": <config.min_reposition_interval_seconds, default 1800>})`. Always pass the loop's configured caps explicitly — never let the routine silently fall back to its own defaults if the launch config set different numbers. Parse its JSON text result as `decision`.
 
 If the routine call itself errors (exception, malformed output): do NOT trade this tick. Journal the error, send_notification only if this is the first consecutive failure (don't spam), and hold — the routine re-derives everything from live on-chain/account state next tick, so a skipped tick is always safe.
 

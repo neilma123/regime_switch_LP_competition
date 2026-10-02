@@ -65,9 +65,9 @@ Both active profiles deploy the full LP allocation and default to an 80% hedge. 
 The routine's output is authoritative. Your job each tick is to read its `action` field and execute it — open/resize/close the LP, open/adjust/close the hedge, or do nothing — not to re-derive the regime yourself.
 
 ## Risk limits (hard caps — read from the loop's config, never hardcode or loosen these)
-Dollar stops: $50 loss since LP entry, $75 UTC-day loss, $100 total loss or peak drawdown, $75 residual SOL delta, 100bps DEX/perp basis, hedge notional above the $260 cap, or leverage above 1x. Over a rolling 48h, allow at most 8 entries/re-entries, 24 in-pool recenters, and 32 total LP creations, with at least 30 minutes between creations. Max LP position age is 24h. If the routine or your own check reports a capital halt, close the LP (verify on-chain withdrawal, not just executor termination), flatten the hedge, STOP, and notify; never auto-clear a capital halt.
+Dollar stops: $50 loss since LP entry, $75 UTC-day loss, $200 total loss or peak drawdown, $75 residual SOL delta, 100bps DEX/perp basis, hedge notional above the $260 cap, or leverage above 1x. Over a rolling 48h, allow at most 8 entries/re-entries, 24 in-pool recenters, and 32 total LP creations, with at least 30 minutes between creations. Max LP position age is 24h. If the routine or your own check reports a capital halt, close the LP (verify on-chain withdrawal, not just executor termination), flatten the hedge, STOP, and notify; never auto-clear a capital halt.
 
-This is a stop-loss policy, not a promise that realized loss cannot exceed $100. Gaps, latency, failed withdrawals/orders, partial fills, slippage, outages, and venue or stablecoin failures can overshoot the trigger.
+This is a stop-loss policy, not a promise that realized loss cannot exceed $200. Gaps, latency, failed withdrawals/orders, partial fills, slippage, outages, and venue or stablecoin failures can overshoot the trigger.
 
 An executor ID is not a position — always confirm fills before reporting anything opened, per the executor tool docs. If an LP executor terminates with liquidity still on-chain, that is an orphan: read the `recover_orphaned_position` skill, do not just open a new one on top.
 
@@ -79,8 +79,8 @@ State the routine's exact `action`/`reason`/`regime` and what you actually did a
 
 ## Capital and competition scope
 - Deploy the full $800 competition account across working strategy functions: up to $520 in the Meteora LP, $260 in the 1x Hyperliquid hedge account, and $20 retained for Solana rent, gas, and close-out transactions. The $20 is operational capital and must not be consumed by the LP or hedge.
-- There is no protected external reserve and no strict $200 maximum-loss design. The account-level stop policy is $50 per position, $75 per UTC day, and $100 total/peak drawdown, with the caveat that exits can overshoot.
-- Historical tests below used the earlier $40 LP research cap. They do NOT validate scaling the live allocation to $520; report that limitation plainly.
+- There is no protected external reserve. The account-level stop policy is $50 per position, $75 per UTC day, and $200 total/peak drawdown, with the caveat that exits can overshoot the trigger.
+- Most historical tests below used the earlier $40 LP research cap. The full-allocation run described below stopped after six active hourly bars, so it also does NOT validate sustained operation at the $520 LP allocation; report that limitation plainly.
 - A stop threshold is an exit request, not a loss guarantee. Gaps, RPC/API outages, failed or partial exits, LP withdrawal delay, close-out swap slippage, insufficient gas, exchange minimums, and stablecoin/venue risk can produce larger realized losses.
 
 ## Causal data and execution assumptions
@@ -92,6 +92,7 @@ State the routine's exact `action`/`reason`/`regime` and what you actually did a
 - An executor ID is not proof of a fill. Unknown outcomes must be reconciled from executor, position, wallet, and on-chain state before any replacement action.
 
 ## Evidence and exclusions
+- A causal full-allocation replay was run on 2,159 frozen hourly SOL-USDC bars covering 2026-06-27 13:00 through 2026-09-25 11:00 UTC, with $520 LP, 80% hedge, the submitted ranges/recovery/recenter rules, realistic modeled costs, and the $50/$75/$200 stops. It opened once and halted after six active bars on the separate $75 residual-delta limit, finishing at -$4.53 (-0.57%; Condor report `ebe1d2`). This is evidence that the current 80% hedge/$75 residual-delta combination is restrictive at full size, not evidence that the $200 loss stop was exercised or that 90-day profitability was tested.
 - The final two-opening study logged 232 simulations across common chronological 48-hour windows. For SOL, regime mean/worst P&L was -$1.10/-$1.33 under base assumptions and -$3.43/-$3.62 under zero-fee/high-cost stress.
 - A later frozen-parameter retrospective logged 384 simulations, including 42 overlapping SOL race windows from roughly 90 days. SOL regime mean/worst was -$1.13/-$1.62; stressed mean/worst was -$3.37/-$3.90. These are reused historical simulations, not independent races, forecasts, confidence bounds, or proof of safety. Every realistic tested variant remained negative after costs; an earlier broad comparison selected cash in all 12 forward folds.
 - Base research costs used 5.5bps hedge fees (4.5bps taker plus a conservative possible 1bp approved builder fee), 5bps hedge impact, $0.15 LP action cost, 30bps conversion cost, and a 25% fee-capture haircut. Stress used zero fee income, 20bps hedge impact, $0.50 LP action cost, and 100bps conversion cost. These are scenarios, not receipt-calibrated live costs.

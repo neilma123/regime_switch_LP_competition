@@ -57,9 +57,9 @@ class Config(BaseModel):
     )
     daily_loss_usd: float = Field(default=75.0, description="UTC-day loss stop (USD)")
     total_loss_usd: float = Field(
-        default=100.0, description="Loss stop since last halt-clear (USD)"
+        default=200.0, description="Loss stop since last halt-clear (USD)"
     )
-    drawdown_usd: float = Field(default=100.0, description="Peak-to-now drawdown stop (USD)")
+    drawdown_usd: float = Field(default=200.0, description="Peak-to-now drawdown stop (USD)")
     max_net_delta_usd: float = Field(
         default=75.0, description="Max |net SOL delta| in USD before halting"
     )
