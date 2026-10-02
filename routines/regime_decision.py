@@ -89,6 +89,30 @@ class Config(BaseModel):
         default=1.0,
         description="Recenter when price reaches an LP range edge",
     )
+    delta_recenter_trigger_usd: float = Field(
+        default=60.0,
+        description="Close/recenter before the hard residual-delta halt is reached",
+    )
+    economic_gate_enabled: bool = Field(
+        default=True,
+        description="Require conservative expected fee income to cover modeled deployment costs",
+    )
+    economic_horizon_hours: int = Field(default=12, description="Economic-gate forecast horizon")
+    economic_cost_multiple: float = Field(
+        default=1.5, description="Required expected-fee multiple over modeled costs"
+    )
+    fee_capture_efficiency: float = Field(
+        default=0.25, description="Haircut applied to pro-rata pool fee estimates"
+    )
+    lp_conversion_cost_bps: float = Field(
+        default=10.0, description="Modeled one-way LP conversion/slippage cost"
+    )
+    lp_fixed_action_cost_usd: float = Field(
+        default=0.02, description="Modeled fixed cost for each LP create/close action"
+    )
+    hedge_all_in_cost_bps: float = Field(
+        default=6.5, description="Modeled hedge fee plus impact for an opening adjustment"
+    )
     acknowledge_and_clear_halt: bool = Field(
         default=False, description="Human-in-the-loop: clear a latched halt"
     )
@@ -273,8 +297,8 @@ class OperatorConfig:
     recovery_confirm_bars: int = 2
     kill_drawdown: float = 0.05
     cooldown_bars: int = 8
-    aggressive_hedge: float = 0.8
-    balanced_hedge: float = 0.8
+    aggressive_hedge: float = 1.0
+    balanced_hedge: float = 1.0
     aggressive_width: float = 0.007
     balanced_width: float = 0.013
     aggressive_capital_fraction: float = 1.0
@@ -507,8 +531,9 @@ def _load_state() -> Dict[str, Any]:
         with open(path, "r", encoding="utf-8") as fh:
             raw = json.load(fh)
     except (OSError, json.JSONDecodeError) as e:
-        logger.warning("regime_decision: state file unreadable (%s), starting fresh", e)
-        return _default_state()
+        raise RuntimeError(
+            f"Persistent strategy state is unreadable; refusing to trade until repaired: {e}"
+        ) from e
     state = _default_state()
     for key in state:
         if key in raw:
@@ -591,13 +616,12 @@ async def _fetch_tracked_lp_position(
     rows = [r for r in resp.get("data", []) if r.get("pool_address") == pool_address]
     if not rows:
         return None
-    rows.sort(key=lambda r: r.get("created_at") or "", reverse=True)
     if len(rows) > 1:
-        logger.warning(
-            "regime_decision: %d OPEN positions found on pool %s, using the newest",
-            len(rows),
-            pool_address,
+        raise RuntimeError(
+            f"Ambiguous live state: {len(rows)} OPEN positions found on pool {pool_address}; "
+            "quarantine and reconcile before trading"
         )
+    rows.sort(key=lambda r: r.get("created_at") or "", reverse=True)
     return rows[0]
 
 
@@ -656,6 +680,106 @@ def _utc_date_str(ts: Optional[datetime] = None) -> str:
 
 def _round_lot(units: float, lot: float = HEDGE_LOT_SIZE) -> float:
     return round(round(units / lot) * lot, 8)
+
+
+def _economic_gate(
+    candles: pd.DataFrame,
+    pool: Dict[str, Any],
+    *,
+    budget_usd: float,
+    width_pct: float,
+    hedge_ratio: float,
+    config: Config,
+    is_recenter: bool,
+) -> Dict[str, Any]:
+    """Conservative all-in deploy/redeploy test.
+
+    This is deliberately a veto, not a profit forecast. It uses only trailing
+    observations, haircuts pro-rata fees, and charges conversion, fixed-action,
+    divergence, and hedge costs before allowing an LP creation.
+    """
+    result: Dict[str, Any] = {
+        "enabled": config.economic_gate_enabled,
+        "passed": not config.economic_gate_enabled,
+        "reason": "disabled" if not config.economic_gate_enabled else "insufficient inputs",
+    }
+    if not config.economic_gate_enabled:
+        return result
+
+    recent = candles.tail(24)
+    volumes = (
+        pd.to_numeric(recent["volume"], errors="coerce").dropna()
+        if "volume" in recent.columns
+        else pd.Series(dtype=float)
+    )
+    closes = (
+        pd.to_numeric(recent["close"], errors="coerce").dropna()
+        if "close" in recent.columns
+        else pd.Series(dtype=float)
+    )
+    tvl_usd = float(
+        pool.get("tvl_usd")
+        or pool.get("liquidity_usd")
+        or pool.get("total_value_locked_usd")
+        or pool.get("reserve_usd")
+        or 0.0
+    )
+    # Gateway exposes these fields as percentages (0.04 means 0.04%), while
+    # the arithmetic below uses fractions.
+    fee_pct = float(
+        pool.get("base_fee_pct")
+        or pool.get("base_fee_percentage")
+        or pool.get("fee_pct")
+        or 0.04
+    ) / 100.0
+    protocol_fee_pct = float(pool.get("protocol_fee_pct") or 0.0) / 100.0
+    if budget_usd <= 0 or width_pct <= 0 or tvl_usd <= 0 or volumes.empty or len(closes) < 3:
+        return result
+
+    hourly_volume_usd = float(volumes.mean())
+    returns = np.log(closes).diff().dropna()
+    hourly_sigma = float(returns.std(ddof=0)) if not returns.empty else 0.0
+    if not all(math.isfinite(v) for v in (hourly_volume_usd, hourly_sigma, tvl_usd, fee_pct)):
+        return result
+
+    liquidity_share = min(max(budget_usd / tvl_usd, 0.0), 0.05)
+    expected_fees_usd = (
+        hourly_volume_usd
+        * config.economic_horizon_hours
+        * max(fee_pct, 0.0)
+        * (1.0 - min(max(protocol_fee_pct, 0.0), 1.0))
+        * liquidity_share
+        * config.fee_capture_efficiency
+    )
+    concentration = min(4.0, max(1.0, 0.013 / width_pct))
+    divergence_cost_usd = (
+        budget_usd * hourly_sigma * hourly_sigma * config.economic_horizon_hours * concentration / 8.0
+    )
+    # Price the complete holding cycle. A fresh entry includes open + eventual
+    # exit; a recenter includes close-old + open-new + eventual exit-new.
+    lp_action_count = 3 if is_recenter else 2
+    lp_action_cost_usd = lp_action_count * (
+        config.lp_fixed_action_cost_usd + budget_usd * config.lp_conversion_cost_bps / 10_000.0
+    )
+    hedge_cost_usd = budget_usd * 0.5 * hedge_ratio * config.hedge_all_in_cost_bps / 10_000.0
+    modeled_cost_usd = divergence_cost_usd + lp_action_cost_usd + hedge_cost_usd
+    required_fees_usd = config.economic_cost_multiple * modeled_cost_usd
+    passed = expected_fees_usd >= required_fees_usd
+    result.update(
+        {
+            "passed": passed,
+            "reason": "expected fees cover conservative costs" if passed else "expected fees below conservative cost hurdle",
+            "horizon_hours": config.economic_horizon_hours,
+            "expected_fees_usd": round(expected_fees_usd, 6),
+            "modeled_cost_usd": round(modeled_cost_usd, 6),
+            "required_fees_usd": round(required_fees_usd, 6),
+            "hourly_volume_usd": round(hourly_volume_usd, 2),
+            "tvl_usd": round(tvl_usd, 2),
+            "fee_pct": fee_pct,
+            "hourly_sigma": round(hourly_sigma, 8),
+        }
+    )
+    return result
 
 
 async def run(config: Config, context: ContextTypes.DEFAULT_TYPE) -> str:
@@ -846,6 +970,7 @@ async def run(config: Config, context: ContextTypes.DEFAULT_TYPE) -> str:
 
     # ---- 5. Regime + operator decision -------------------------------------
     op_state = OperatorState(**state["operator"])
+    previous_bar_timestamp = op_state.last_bar_timestamp
     op_decision = decide(bar, equity=equity_usd, state=op_state, config=op_cfg)
     state["operator"] = {
         "last_profile": op_state.last_profile,
@@ -938,6 +1063,7 @@ async def run(config: Config, context: ContextTypes.DEFAULT_TYPE) -> str:
     # ---- 6. Actions ---------------------------------------------------------
     actions: List[Dict[str, Any]] = []
     reason = op_decision.reason
+    economics: Optional[Dict[str, Any]] = None
     state["pending_open"] = pending_open  # may be cleared above
 
     if guard["halted"]:
@@ -965,12 +1091,14 @@ async def run(config: Config, context: ContextTypes.DEFAULT_TYPE) -> str:
             capital_or_width_changed
             or (half_width > 0 and drift >= config.recenter_width_multiple * half_width)
             or age_seconds >= config.max_position_age_seconds
+            or net_delta_usd >= config.delta_recenter_trigger_usd
         )
 
         if lp_position and (not lp_on or needs_recenter):
             close_reason = "regime turned off DEX" if not lp_on else "recenter: " + (
                 "position age" if age_seconds >= config.max_position_age_seconds
                 else "price drifted off center" if drift >= config.recenter_width_multiple * half_width
+                else "residual delta approached hard limit" if net_delta_usd >= config.delta_recenter_trigger_usd
                 else "target capital/width changed"
             )
             actions.append({"type": "close_lp", "reason": close_reason})
@@ -990,6 +1118,21 @@ async def run(config: Config, context: ContextTypes.DEFAULT_TYPE) -> str:
                         f"reposition cooldown {seconds_since_last_open:.0f}/"
                         f"{config.min_reposition_interval_seconds}s"
                     )
+                economics = _economic_gate(
+                    candles.iloc[:-1],
+                    pool,
+                    budget_usd=target_notional,
+                    width_pct=op_decision.range_width_pct,
+                    hedge_ratio=op_decision.hedge_ratio,
+                    config=config,
+                    is_recenter=True,
+                )
+                if not economics["passed"]:
+                    recenter_block = (
+                        "economic gate: expected fees $"
+                        f"{economics.get('expected_fees_usd', 0.0):.4f} < required $"
+                        f"{economics.get('required_fees_usd', 0.0):.4f}"
+                    )
                 if recenter_block:
                     reason = f"close and hold: recenter required but blocked by {recenter_block}"
                 else:
@@ -1008,13 +1151,31 @@ async def run(config: Config, context: ContextTypes.DEFAULT_TYPE) -> str:
                         "kind": "recenter",
                         "capital_fraction": op_decision.capital_fraction,
                         "width_pct": op_decision.range_width_pct,
+                        "at": now.isoformat(),
                     }
             target_hedge_units = -min(planned_base_sol * op_decision.hedge_ratio, config.hedge_collateral_usd / hedge_price) if hedge_price else 0.0
             actions.append(_set_hedge_action(current_hedge_units, target_hedge_units, hedge_price))
 
         elif not lp_position and lp_on:
             entry_block = None
-            if openings_last_48h >= config.max_openings_per_48h:
+            economics = _economic_gate(
+                candles.iloc[:-1],
+                pool,
+                budget_usd=target_notional,
+                width_pct=op_decision.range_width_pct,
+                hedge_ratio=op_decision.hedge_ratio,
+                config=config,
+                is_recenter=False,
+            )
+            if pending_open:
+                entry_block = "unresolved prior open intent; reconcile before another submission"
+            elif not economics["passed"]:
+                entry_block = (
+                    "economic gate: expected fees $"
+                    f"{economics.get('expected_fees_usd', 0.0):.4f} < required $"
+                    f"{economics.get('required_fees_usd', 0.0):.4f}"
+                )
+            elif openings_last_48h >= config.max_openings_per_48h:
                 entry_block = f"aggregate opening cap {openings_last_48h}/{config.max_openings_per_48h}"
             elif new_entries_last_48h >= config.max_new_entries_per_48h:
                 entry_block = f"entry cap {new_entries_last_48h}/{config.max_new_entries_per_48h}"
@@ -1041,6 +1202,7 @@ async def run(config: Config, context: ContextTypes.DEFAULT_TYPE) -> str:
                     "kind": "new",
                     "capital_fraction": op_decision.capital_fraction,
                     "width_pct": op_decision.range_width_pct,
+                    "at": now.isoformat(),
                 }
                 target_hedge_units = -min(planned_base_sol * op_decision.hedge_ratio, config.hedge_collateral_usd / hedge_price) if hedge_price else 0.0
                 actions.append(_set_hedge_action(current_hedge_units, target_hedge_units, hedge_price))
@@ -1079,6 +1241,8 @@ async def run(config: Config, context: ContextTypes.DEFAULT_TYPE) -> str:
         "lp_value_usd": lp_value_usd,
         "current_hedge_units": current_hedge_units,
         "gateway_wallet_available": balances["gateway_wallet_available"],
+        "delta_recenter_trigger_usd": config.delta_recenter_trigger_usd,
+        "economic_gate": economics,
     }
 
     history = list(state.get("hourly_history") or [])
@@ -1107,6 +1271,24 @@ async def run(config: Config, context: ContextTypes.DEFAULT_TYPE) -> str:
     )
     state["hourly_history"] = history[-72:]
     state.setdefault("tuning", None)
+
+    if decision_bar_ts > previous_bar_timestamp:
+        state.setdefault("audit", []).append(
+            {
+                "kind": "decision_receipt",
+                "at": now.isoformat(),
+                "decision_bar_timestamp": decision_bar_ts,
+                "regime": op_decision.regime,
+                "profile": op_decision.profile,
+                "reason": reason,
+                "actions": [a.get("type") for a in actions],
+                "equity_usd": round(equity_usd, 4),
+                "net_delta_usd": round(net_delta_usd, 4),
+                "basis_bps": round(basis_bps, 4),
+                "economic_gate": economics,
+            }
+        )
+        state["audit"] = state["audit"][-200:]
 
     _save_state(state)
 

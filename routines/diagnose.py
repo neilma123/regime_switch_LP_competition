@@ -114,6 +114,8 @@ async def run(config: Config, context: ContextTypes.DEFAULT_TYPE) -> str:
         "opened_at": guard.get("opened_at"),
         "lp_openings_count": len(state.get("lp_openings") or []),
     }
+    receipts = [r for r in (state.get("audit") or []) if r.get("kind") == "decision_receipt"]
+    latest_decision_receipt = receipts[-1] if receipts else None
 
     packet = {
         "status": "OK",
@@ -121,6 +123,7 @@ async def run(config: Config, context: ContextTypes.DEFAULT_TYPE) -> str:
         "attribution": attribution,
         "fixed_rule_says": fixed_rule_says,
         "current_position": current_position,
+        "latest_decision_receipt": latest_decision_receipt,
         "active_proposal": state.get("tuning"),
         "tuning_envelope": TUNING_ENVELOPE,
     }
@@ -146,6 +149,9 @@ async def run(config: Config, context: ContextTypes.DEFAULT_TYPE) -> str:
         "**Active proposal:** " + (json.dumps(packet["active_proposal"]) if packet["active_proposal"] else "none")
     )
     builder.table([{"field": k, "value": json.dumps(v) if isinstance(v, list) else v} for k, v in TUNING_ENVELOPE.items()], ["field", "value"])
+
+    builder.section("05 / DECISION RECEIPT", "Inputs and economic gate recorded for the latest completed decision bar")
+    builder.markdown(json.dumps(latest_decision_receipt, indent=2) if latest_decision_receipt else "No completed-bar receipt yet.")
 
     builder.manual_order()
     await builder.save()
