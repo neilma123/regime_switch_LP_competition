@@ -53,9 +53,9 @@ class Config(BaseModel):
         default=260.0, description="Max collateral/notional allotted to the 1x hedge (USD)"
     )
     position_loss_usd: float = Field(
-        default=50.0, description="Stop loss since current position's entry (USD)"
+        default=100.0, description="Stop loss since current position's entry (USD)"
     )
-    daily_loss_usd: float = Field(default=75.0, description="UTC-day loss stop (USD)")
+    daily_loss_usd: float = Field(default=150.0, description="UTC-day loss stop (USD)")
     total_loss_usd: float = Field(
         default=200.0, description="Loss stop since last halt-clear (USD)"
     )
@@ -611,8 +611,10 @@ async def _fetch_tracked_lp_position(
             network=network, status="OPEN", limit=50
         )
     except Exception as e:
-        logger.warning("regime_decision: search_positions failed: %s", e)
-        return None
+        raise RuntimeError(
+            "Could not reconcile live LP positions; refusing to treat an unknown "
+            f"position state as flat: {e}"
+        ) from e
     rows = [r for r in resp.get("data", []) if r.get("pool_address") == pool_address]
     if not rows:
         return None
@@ -629,8 +631,10 @@ async def _fetch_hedge_position(client, connector: str, pair: str) -> Optional[D
     try:
         resp = await client.trading.get_positions(connector_names=[connector])
     except Exception as e:
-        logger.warning("regime_decision: get_positions failed: %s", e)
-        return None
+        raise RuntimeError(
+            "Could not reconcile the live hedge position; refusing to treat an "
+            f"unknown position state as flat: {e}"
+        ) from e
     for row in resp.get("data", []):
         if row.get("trading_pair") == pair:
             return row
@@ -645,6 +649,7 @@ async def _fetch_wallet_and_hedge_equity(
         "wallet_usdc": 0.0,
         "hedge_account_usd": 0.0,
         "gateway_wallet_available": False,
+        "hedge_account_available": False,
     }
     try:
         state = await client.portfolio.get_state()
@@ -654,6 +659,8 @@ async def _fetch_wallet_and_hedge_equity(
     for account_data in state.values():
         for connector_name, tokens in account_data.items():
             is_gateway_wallet = "solana" in connector_name.lower() or connector_name == network
+            if connector_name == hedge_connector:
+                out["hedge_account_available"] = True
             for tok in tokens:
                 symbol = tok.get("token")
                 units = float(tok.get("units") or 0.0)
@@ -826,11 +833,24 @@ async def run(config: Config, context: ContextTypes.DEFAULT_TYPE) -> str:
 
     hedge_price_resp = await client.market_data.get_prices(config.hedge_connector, [config.hedge_pair])
     hedge_price = float(hedge_price_resp.get("prices", {}).get(config.hedge_pair) or 0.0)
+    if not all(math.isfinite(value) and value > 0 for value in (pool_price, quote_price, hedge_price)):
+        raise RuntimeError(
+            "Invalid live price input; refusing capital actions until pool, quote, and hedge "
+            f"prices are positive and finite (pool={pool_price}, quote={quote_price}, hedge={hedge_price})"
+        )
 
     # ---- 2. Current state -------------------------------------------------
     lp_position = await _fetch_tracked_lp_position(client, config.network, config.pool_address)
     hedge_position = await _fetch_hedge_position(client, config.hedge_connector, config.hedge_pair)
     balances = await _fetch_wallet_and_hedge_equity(client, config.network, config.hedge_connector)
+    if not balances["gateway_wallet_available"]:
+        raise RuntimeError(
+            "Solana wallet balances are unavailable; refusing to trade rather than treating them as zero"
+        )
+    if not balances["hedge_account_available"]:
+        raise RuntimeError(
+            "Hyperliquid account balances are unavailable; refusing to trade rather than treating them as zero"
+        )
 
     hedge_side = (hedge_position or {}).get("side")
     hedge_amount = float((hedge_position or {}).get("amount") or 0.0)
@@ -1241,6 +1261,7 @@ async def run(config: Config, context: ContextTypes.DEFAULT_TYPE) -> str:
         "lp_value_usd": lp_value_usd,
         "current_hedge_units": current_hedge_units,
         "gateway_wallet_available": balances["gateway_wallet_available"],
+        "hedge_account_available": balances["hedge_account_available"],
         "delta_recenter_trigger_usd": config.delta_recenter_trigger_usd,
         "economic_gate": economics,
     }

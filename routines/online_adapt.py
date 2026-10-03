@@ -27,7 +27,7 @@ class Config(BaseModel):
     enabled: bool = Field(default=True)
     review_hours: int = Field(default=12, ge=6, le=24)
     lookback_hours: int = Field(default=24, ge=12, le=72)
-    loss_pause_usd: float = Field(default=0.50, ge=0.0)
+    loss_pause_usd: float = Field(default=10.0, ge=0.0)
     fee_cost_multiple: float = Field(default=1.5, ge=1.0, le=3.0)
 
 
@@ -49,7 +49,10 @@ def _parse(value: Any) -> datetime | None:
 def _load_state() -> Dict[str, Any]:
     path = _state_path()
     if not path.exists():
-        raise RuntimeError("regime_decision must establish persistent state before online adaptation")
+        # A submitted agent must boot from a clean checkout. ``online_adapt``
+        # runs before ``regime_decision``, so no file means no history yet.
+        # ``regime_decision`` atomically creates initial state later this tick.
+        return {}
     try:
         with open(path, "r", encoding="utf-8") as fh:
             return json.load(fh)
