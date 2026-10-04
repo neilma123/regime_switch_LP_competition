@@ -48,9 +48,12 @@ class Config(BaseModel):
     controller_id: str = Field(
         default="regime_switch_lp", description="Controller id tag for executors"
     )
-    max_lp_usd: float = Field(default=520.0, description="Max LP budget (USD)")
+    max_lp_usd: float = Field(default=380.0, description="Max LP budget (USD)")
     hedge_collateral_usd: float = Field(
-        default=260.0, description="Max collateral/notional allotted to the 1x hedge (USD)"
+        default=380.0, description="Max collateral/notional allotted to the 1x hedge (USD)"
+    )
+    operating_reserve_usd: float = Field(
+        default=40.0, description="SOL wallet reserve excluded from active trading delta (USD)"
     )
     position_loss_usd: float = Field(
         default=100.0, description="Stop loss since current position's entry (USD)"
@@ -64,7 +67,7 @@ class Config(BaseModel):
         default=75.0, description="Max |net SOL delta| in USD before halting"
     )
     max_basis_bps: float = Field(
-        default=100.0, description="Max |pool vs hedge price| basis in bps before halting"
+        default=250.0, description="Max |pool vs hedge price| basis in bps before pausing this tick"
     )
     max_openings_per_48h: int = Field(
         default=32, description="Aggregate LP creation cap per rolling 48h"
@@ -82,7 +85,7 @@ class Config(BaseModel):
         default=86400, description="Force a recenter once a position is this old"
     )
     max_feature_age_seconds: int = Field(
-        default=7200,
+        default=10800,
         description="Fail closed when the completed hourly decision bar is older than this",
     )
     recenter_width_multiple: float = Field(
@@ -749,7 +752,13 @@ def _economic_gate(
     if not all(math.isfinite(v) for v in (hourly_volume_usd, hourly_sigma, tvl_usd, fee_pct)):
         return result
 
-    liquidity_share = min(max(budget_usd / tvl_usd, 0.0), 0.05)
+    # DLMM TVL spans many inactive bins. Estimate the fraction lying in the
+    # selected band once; do not also multiply the budget by a concentration
+    # factor (which would double-count the same effect).
+    full_width_pct = 2.0 * max(width_pct, 0.002)
+    active_band_fraction = min(0.25, max(0.03, 3.0 * full_width_pct))
+    active_band_tvl_usd = tvl_usd * active_band_fraction
+    liquidity_share = min(max(budget_usd / active_band_tvl_usd, 0.0), 0.15)
     expected_fees_usd = (
         hourly_volume_usd
         * config.economic_horizon_hours
@@ -782,6 +791,9 @@ def _economic_gate(
             "required_fees_usd": round(required_fees_usd, 6),
             "hourly_volume_usd": round(hourly_volume_usd, 2),
             "tvl_usd": round(tvl_usd, 2),
+            "active_band_tvl_usd": round(active_band_tvl_usd, 2),
+            "active_band_fraction": round(active_band_fraction, 6),
+            "liquidity_share": round(liquidity_share, 8),
             "fee_pct": fee_pct,
             "hourly_sigma": round(hourly_sigma, 8),
         }
@@ -932,7 +944,12 @@ async def run(config: Config, context: ContextTypes.DEFAULT_TYPE) -> str:
     if guard["since_halt_clear_equity"] <= 0:
         guard["since_halt_clear_equity"] = equity_usd
 
-    net_delta_sol = balances["wallet_sol"] + lp_base_sol + current_hedge_units
+    gas_reserve_sol = min(
+        balances["wallet_sol"],
+        config.operating_reserve_usd / pool_price if pool_price else 0.0,
+    )
+    active_wallet_sol = max(balances["wallet_sol"] - gas_reserve_sol, 0.0)
+    net_delta_sol = active_wallet_sol + lp_base_sol + current_hedge_units
     net_delta_usd = abs(net_delta_sol) * pool_price
     basis_bps = abs(pool_price / hedge_price - 1.0) * 10_000 if hedge_price else 0.0
     hedge_notional = abs(current_hedge_units) * hedge_price
@@ -949,8 +966,6 @@ async def run(config: Config, context: ContextTypes.DEFAULT_TYPE) -> str:
             new_halt_reason = f"position loss >= ${config.position_loss_usd:.2f} since entry"
         elif net_delta_usd >= config.max_net_delta_usd:
             new_halt_reason = f"residual delta ${net_delta_usd:.2f} >= ${config.max_net_delta_usd:.2f}"
-        elif basis_bps >= config.max_basis_bps:
-            new_halt_reason = f"basis {basis_bps:.1f}bps >= {config.max_basis_bps:.1f}bps"
         elif hedge_notional > config.hedge_collateral_usd + 0.50:
             new_halt_reason = (
                 f"hedge notional ${hedge_notional:.2f} exceeds collateral "
@@ -1089,13 +1104,22 @@ async def run(config: Config, context: ContextTypes.DEFAULT_TYPE) -> str:
     if guard["halted"]:
         actions.append({"type": "notify", "message": f"HALTED: {guard['halt_reason']}"})
         reason = f"halted: {guard['halt_reason']}"
-        # A capital halt is a flatten-all event. Close the LP first so the loop
-        # can verify withdrawal, then remove the hedge; never leave naked SOL
-        # exposure or preserve a risk position merely because the latch fired.
+        # A capital halt closes the LP. Keep a bounded hedge against the SOL
+        # returned to the wallet until that inventory is reused or converted.
         if lp_position:
             actions.append({"type": "close_lp", "reason": guard["halt_reason"]})
-        if abs(current_hedge_units) > 0:
-            actions.append(_set_hedge_action(current_hedge_units, 0.0, hedge_price))
+        post_close_base_sol = active_wallet_sol + (lp_base_sol if lp_position else 0.0)
+        halt_target_hedge_units = -min(
+            post_close_base_sol,
+            config.hedge_collateral_usd / hedge_price,
+        ) if hedge_price else current_hedge_units
+        if abs(halt_target_hedge_units - current_hedge_units) > 0:
+            actions.append(_set_hedge_action(current_hedge_units, halt_target_hedge_units, hedge_price))
+    elif basis_bps >= config.max_basis_bps:
+        reason = (
+            f"hold: transient basis {basis_bps:.1f}bps >= "
+            f"{config.max_basis_bps:.1f}bps; skipping capital actions this tick"
+        )
     else:
         half_width = (lp_upper - lp_lower) / 2.0 if lp_position else 0.0
         center = (lp_upper + lp_lower) / 2.0 if lp_position else 0.0
@@ -1114,7 +1138,7 @@ async def run(config: Config, context: ContextTypes.DEFAULT_TYPE) -> str:
             or net_delta_usd >= config.delta_recenter_trigger_usd
         )
 
-        if lp_position and (not lp_on or needs_recenter):
+        if lp_position and not lp_on:
             close_reason = "regime turned off DEX" if not lp_on else "recenter: " + (
                 "position age" if age_seconds >= config.max_position_age_seconds
                 else "price drifted off center" if drift >= config.recenter_width_multiple * half_width
@@ -1122,59 +1146,71 @@ async def run(config: Config, context: ContextTypes.DEFAULT_TYPE) -> str:
                 else "target capital/width changed"
             )
             actions.append({"type": "close_lp", "reason": close_reason})
-            planned_base_sol = 0.0
-            if lp_on and needs_recenter:
-                recenter_block = None
-                if openings_last_48h >= config.max_openings_per_48h:
-                    recenter_block = (
-                        f"aggregate opening cap {openings_last_48h}/{config.max_openings_per_48h}"
-                    )
-                elif repositions_last_48h >= config.max_repositions_per_48h:
-                    recenter_block = (
-                        f"reposition cap {repositions_last_48h}/{config.max_repositions_per_48h}"
-                    )
-                elif seconds_since_last_open < config.min_reposition_interval_seconds:
-                    recenter_block = (
-                        f"reposition cooldown {seconds_since_last_open:.0f}/"
-                        f"{config.min_reposition_interval_seconds}s"
-                    )
-                economics = _economic_gate(
-                    candles.iloc[:-1],
-                    pool,
-                    budget_usd=target_notional,
-                    width_pct=op_decision.range_width_pct,
-                    hedge_ratio=op_decision.hedge_ratio,
-                    config=config,
-                    is_recenter=True,
-                )
-                if not economics["passed"]:
-                    recenter_block = (
-                        "economic gate: expected fees $"
-                        f"{economics.get('expected_fees_usd', 0.0):.4f} < required $"
-                        f"{economics.get('required_fees_usd', 0.0):.4f}"
-                    )
-                if recenter_block:
-                    reason = f"close and hold: recenter required but blocked by {recenter_block}"
-                else:
-                    budget = target_notional
-                    planned_base_sol = (budget / 2.0) / pool_price if pool_price else 0.0
-                    actions.append(
-                        {
-                            "type": "open_lp",
-                            "lower_price": pool_price * (1 - op_decision.range_width_pct),
-                            "upper_price": pool_price * (1 + op_decision.range_width_pct),
-                            "budget_usd": budget,
-                            "width_pct": op_decision.range_width_pct,
-                        }
-                    )
-                    state["pending_open"] = {
-                        "kind": "recenter",
-                        "capital_fraction": op_decision.capital_fraction,
-                        "width_pct": op_decision.range_width_pct,
-                        "at": now.isoformat(),
-                    }
-            target_hedge_units = -min(planned_base_sol * op_decision.hedge_ratio, config.hedge_collateral_usd / hedge_price) if hedge_price else 0.0
+            # A close returns the LP's SOL to the wallet. Preserve a bounded
+            # hedge against that inventory until it is reused or converted.
+            post_close_base_sol = active_wallet_sol + lp_base_sol
+            target_hedge_units = -min(
+                post_close_base_sol,
+                config.hedge_collateral_usd / hedge_price,
+            ) if hedge_price else 0.0
             actions.append(_set_hedge_action(current_hedge_units, target_hedge_units, hedge_price))
+
+        elif lp_position and lp_on and needs_recenter:
+            close_reason = "recenter: " + (
+                "position age" if age_seconds >= config.max_position_age_seconds
+                else "price drifted off center" if drift >= config.recenter_width_multiple * half_width
+                else "residual delta approached hard limit" if net_delta_usd >= config.delta_recenter_trigger_usd
+                else "target capital/width changed"
+            )
+            recenter_block = None
+            if openings_last_48h >= config.max_openings_per_48h:
+                recenter_block = f"aggregate opening cap {openings_last_48h}/{config.max_openings_per_48h}"
+            elif repositions_last_48h >= config.max_repositions_per_48h:
+                recenter_block = f"reposition cap {repositions_last_48h}/{config.max_repositions_per_48h}"
+            elif seconds_since_last_open < config.min_reposition_interval_seconds:
+                recenter_block = (
+                    f"reposition cooldown {seconds_since_last_open:.0f}/"
+                    f"{config.min_reposition_interval_seconds}s"
+                )
+            economics = _economic_gate(
+                candles.iloc[:-1], pool, budget_usd=target_notional,
+                width_pct=op_decision.range_width_pct,
+                hedge_ratio=op_decision.hedge_ratio, config=config, is_recenter=True,
+            )
+            if not economics["passed"]:
+                recenter_block = (
+                    "economic gate: expected fees $"
+                    f"{economics.get('expected_fees_usd', 0.0):.4f} < required $"
+                    f"{economics.get('required_fees_usd', 0.0):.4f}"
+                )
+            if recenter_block:
+                reason = f"hold: recenter indicated but blocked by {recenter_block}"
+                target_hedge_units = -min(
+                    (active_wallet_sol + lp_base_sol) * op_decision.hedge_ratio,
+                    config.hedge_collateral_usd / hedge_price,
+                ) if hedge_price else 0.0
+                if abs(target_hedge_units - current_hedge_units) * hedge_price >= VENUE_MIN_ORDER_USD:
+                    actions.append(_set_hedge_action(current_hedge_units, target_hedge_units, hedge_price))
+            else:
+                budget = target_notional
+                planned_base_sol = (budget / 2.0) / pool_price if pool_price else 0.0
+                actions.append({"type": "close_lp", "reason": close_reason})
+                actions.append({
+                    "type": "open_lp",
+                    "lower_price": pool_price * (1 - op_decision.range_width_pct),
+                    "upper_price": pool_price * (1 + op_decision.range_width_pct),
+                    "budget_usd": budget,
+                    "width_pct": op_decision.range_width_pct,
+                })
+                state["pending_open"] = {
+                    "kind": "recenter", "capital_fraction": op_decision.capital_fraction,
+                    "width_pct": op_decision.range_width_pct, "at": now.isoformat(),
+                }
+                target_hedge_units = -min(
+                    planned_base_sol * op_decision.hedge_ratio,
+                    config.hedge_collateral_usd / hedge_price,
+                ) if hedge_price else 0.0
+                actions.append(_set_hedge_action(current_hedge_units, target_hedge_units, hedge_price))
 
         elif not lp_position and lp_on:
             entry_block = None
@@ -1260,6 +1296,8 @@ async def run(config: Config, context: ContextTypes.DEFAULT_TYPE) -> str:
         "lp_quote_usdc": lp_quote_usdc,
         "lp_value_usd": lp_value_usd,
         "current_hedge_units": current_hedge_units,
+        "active_wallet_sol": active_wallet_sol,
+        "gas_reserve_sol": gas_reserve_sol,
         "gateway_wallet_available": balances["gateway_wallet_available"],
         "hedge_account_available": balances["hedge_account_available"],
         "delta_recenter_trigger_usd": config.delta_recenter_trigger_usd,

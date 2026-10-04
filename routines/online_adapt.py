@@ -112,12 +112,10 @@ async def run(config: Config, context: ContextTypes.DEFAULT_TYPE) -> str:
         if profile in {"paused", "laya_pause"}:
             result = {"status": "SAFETY_PAUSE", "detail": receipt.get("reason")}
         else:
-            economic_bad = bool(
-                economics.get("enabled")
-                and float(economics.get("expected_fees_usd") or 0.0)
-                    < config.fee_cost_multiple * float(economics.get("modeled_cost_usd") or 0.0)
-            )
-            pause = net_change <= -config.loss_pause_usd or economic_bad
+            # The entry/recenter gate already vetoes uneconomic deployment.
+            # Reusing that same veto here made a no-trade state self-latching;
+            # adaptation now pauses only on realized account evidence.
+            pause = net_change <= -config.loss_pause_usd
             if pause:
                 proposal = {
                     "hedge_ratio": 1.0,
