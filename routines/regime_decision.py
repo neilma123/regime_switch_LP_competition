@@ -48,7 +48,7 @@ class Config(BaseModel):
     controller_id: str = Field(
         default="regime_switch_lp", description="Controller id tag for executors"
     )
-    max_lp_usd: float = Field(default=380.0, description="Max LP budget (USD)")
+    max_lp_usd: float = Field(default=379.0, description="Max LP budget (USD)")
     hedge_collateral_usd: float = Field(
         default=380.0, description="Max collateral/notional allotted to the 1x hedge (USD)"
     )
@@ -1193,7 +1193,7 @@ async def run(config: Config, context: ContextTypes.DEFAULT_TYPE) -> str:
                     actions.append(_set_hedge_action(current_hedge_units, target_hedge_units, hedge_price))
             else:
                 budget = target_notional
-                planned_base_sol = (budget / 2.0) / pool_price if pool_price else 0.0
+                planned_base_sol = 0.0  # quote-only LP entry; hedge measured SOL after fill
                 actions.append({"type": "close_lp", "reason": close_reason})
                 actions.append({
                     "type": "open_lp",
@@ -1244,7 +1244,7 @@ async def run(config: Config, context: ContextTypes.DEFAULT_TYPE) -> str:
                 reason = f"hold: active regime but blocked by {entry_block}"
             else:
                 budget = target_notional
-                planned_base_sol = (budget / 2.0) / pool_price if pool_price else 0.0
+                planned_base_sol = 0.0  # quote-only LP entry; hedge measured SOL after fill
                 actions.append(
                     {
                         "type": "open_lp",
