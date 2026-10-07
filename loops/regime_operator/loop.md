@@ -21,10 +21,10 @@ default_config:
   total_loss_usd: 200
   max_net_delta_usd: 75
   delta_recenter_trigger_usd: 60
-  economic_gate_enabled: true
+  economic_gate_enabled: false
   economic_cost_multiple: 1.5
   online_self_modification: true
-  online_review_hours: 12
+  online_review_hours: 6
   online_loss_pause_usd: 10
   max_openings_per_48h: 32
   max_new_entries_per_48h: 8
